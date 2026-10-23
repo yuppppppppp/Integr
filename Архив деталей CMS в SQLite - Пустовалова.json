@@ -1,0 +1,344 @@
+{
+  "name": "Архив деталей CMS в SQLite - Пустовалова",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ce0c8847-4b27-4612-a083-cbec01984f1d",
+      "name": "Ручной запуск синхронизации"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS spares_history (\n    spare_code         TEXT PRIMARY KEY,\n    spare_name         TEXT NOT NULL,\n    spare_description  TEXT,\n    spare_type         TEXT NOT NULL,\n    spare_status       TEXT NOT NULL,\n    price              TEXT NOT NULL,\n    quantity           INTEGER NOT NULL,\n    source_updated_at  TEXT NOT NULL,\n    first_seen_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n    last_synced_at     TEXT NOT NULL\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-sqlite3.sqliteNode",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "43204f92-6c47-4d53-bc2e-836a034dc4f0",
+      "name": "Создание таблицы Истории",
+      "credentials": {
+        "sqliteCredentialsApi": {
+          "id": "vtZHPG566alMNeC0",
+          "name": "SQLite Database account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://77.67.89.207:8080/cms/spares",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page",
+              "value": "0"
+            },
+            {
+              "name": "size",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page",
+                    "value": "={{ $pageCount }}"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        0
+      ],
+      "id": "7fe7bffa-71a3-4370-9bd4-f8d7eb62bc9b",
+      "name": "Получение всех страниц CMS",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "qflVt01AfPm1xVSK",
+          "name": "CMS Basic Auth pustovalova"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const syncTime = new Date().toISOString();\n\nreturn $input.all().map((item) => {\n  const source = item.json;\n\n  if (!source.spareCode) {\n    throw new Error('CMS вернула деталь без spareCode');\n  }\n\n  return {\n    json: {\n      spare_code: source.spareCode,\n      spare_name: source.spareName,\n      spare_description: source.spareDescription ?? '',\n      spare_type: source.spareType,\n      spare_status: source.spareStatus,\n      price: String(source.price),\n      quantity: Number(source.quantity),\n      source_updated_at: source.updatedAt,\n      last_synced_at: syncTime,\n    },\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "2b66921a-10c7-4145-b7fd-b5e6a968e8b4",
+      "name": "Нормализация полей"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "table": {
+          "__rl": true,
+          "value": "spares_history",
+          "mode": "list",
+          "cachedResultName": "spares_history"
+        },
+        "columnToMatchOn": "spare_code",
+        "options": {}
+      },
+      "type": "n8n-nodes-sqlite3.sqliteNode",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ],
+      "id": "fe1e9c4d-eab8-4369-a948-6d413f121bf6",
+      "name": "Обновление или запись данных",
+      "credentials": {
+        "sqliteCredentialsApi": {
+          "id": "vtZHPG566alMNeC0",
+          "name": "SQLite Database account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    spare_code,\n    spare_name,\n    spare_description,\n    spare_type,\n    spare_status,\n    price,\n    quantity,\n    source_updated_at\nFROM spares_history\nORDER BY CAST(REPLACE(spare_code, 'SPARE-', '') AS INTEGER);",
+        "options": {}
+      },
+      "type": "n8n-nodes-sqlite3.sqliteNode",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "f8308390-d693-4ead-9ca4-c32853632005",
+      "name": "Получение всей истории из SQLite3",
+      "executeOnce": true,
+      "credentials": {
+        "sqliteCredentialsApi": {
+          "id": "vtZHPG566alMNeC0",
+          "name": "SQLite Database account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function escapeCsv(value) {\n  const text = value == null ? '' : String(value);\n  const escaped = text.replace(/\"/g, '\"\"');\n\n  return /[;\"\\r\\n]/.test(text)\n    ? `\"${escaped}\"`\n    : escaped;\n}\n\nconst rows = $input.all().map((item) => item.json);\n\nconst csv = rows\n  .map((row) => [\n    row.spare_code,\n    row.spare_name,\n    row.spare_description,\n    row.spare_type,\n    row.spare_status,\n    row.price,\n    row.quantity,\n    row.source_updated_at,\n  ].map(escapeCsv).join(';'))\n  .join('\\n');\n\nreturn [{\n  json: {\n    csv,\n    rowCount: rows.length,\n    generatedAt: new Date().toISOString(),\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        0
+      ],
+      "id": "de15e105-021c-4274-8d68-fe7b3d679784",
+      "name": "Формирование CSV"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://77.67.89.207:8080/auth/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"username\": \"student33\",\n  \"password\": \"yfBlmX9HG5&=\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1568,
+        0
+      ],
+      "id": "cd854cbb-3e13-4c4d-9bfa-c202065b553d",
+      "name": "Получение токена"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://77.67.89.207:8080/report/csv",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/csv",
+        "body": "={{ $('Формирование CSV').first().json.csv }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1792,
+        0
+      ],
+      "id": "cc43d1b6-8d3f-4027-917c-c678fa2b5978",
+      "name": "Отправка CSV отчета"
+    },
+    {
+      "parameters": {
+        "url": "http://77.67.89.207:8080/students/33/results",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2016,
+        0
+      ],
+      "id": "98a94613-0603-44e2-8e10-b1482ea422f3",
+      "name": "Проверка результата"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Ручной запуск синхронизации": {
+      "main": [
+        [
+          {
+            "node": "Создание таблицы Истории",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Создание таблицы Истории": {
+      "main": [
+        [
+          {
+            "node": "Получение всех страниц CMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Получение всех страниц CMS": {
+      "main": [
+        [
+          {
+            "node": "Нормализация полей",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Нормализация полей": {
+      "main": [
+        [
+          {
+            "node": "Обновление или запись данных",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Обновление или запись данных": {
+      "main": [
+        [
+          {
+            "node": "Получение всей истории из SQLite3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Получение всей истории из SQLite3": {
+      "main": [
+        [
+          {
+            "node": "Формирование CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Формирование CSV": {
+      "main": [
+        [
+          {
+            "node": "Получение токена",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Получение токена": {
+      "main": [
+        [
+          {
+            "node": "Отправка CSV отчета",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Отправка CSV отчета": {
+      "main": [
+        [
+          {
+            "node": "Проверка результата",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "f86e0e29-682f-43d4-ae11-1fb6f9f46b66",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6d1ff2e7c16a98902537512b335f61800140e8b9a63ee1f2309bcf42729c44c9"
+  },
+  "nodeGroups": [],
+  "id": "DLRWZPoLbGuZ1jxS",
+  "tags": []
+}
